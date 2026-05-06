@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_name="${0##*/}"
+default_path="/usr/local/bin:/usr/bin:/bin"
+
+die() {
+  printf 'Error: %s\n' "$1" >&2
+  exit 1
+}
+
+require_cmd() {
+  local command_name="$1"
+  local help_text="${2:-}"
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    if [[ -n "$help_text" ]]; then
+      die "Missing required command: $command_name. $help_text"
+    fi
+    die "Missing required command: $command_name"
+  fi
+}
+
+require_linux() {
+  if [[ "$(uname -s)" != "Linux" ]]; then
+    die "This wrapper only supports Linux because it relies on bubblewrap."
+  fi
+}
+
+require_runtime() {
+  require_linux
+  require_cmd bwrap "Install bubblewrap with your system package manager."
+  require_cmd opencode "Install Opencode before using this wrapper."
+}
+
+setup_project_paths() {
+  project="$(pwd -P)"
+  sandbox_root="$project/.sandbox"
+
+  sandbox_home="$sandbox_root/home"
+  cache_dir="$sandbox_root/cache"
+  config_dir="$sandbox_root/config"
+  data_dir="$sandbox_root/data"
+  state_dir="$sandbox_root/state"
+}
+
+resolve_opencode_paths() {
+  opencode_real="$(readlink -f "$(command -v opencode)")"
+  opencode_first_line="$(head -n 1 "$opencode_real" 2>/dev/null || true)"
+
+  opencode_bin_dir="$(dirname "$opencode_real")"
+  opencode_install_root="$(dirname "$(dirname "$opencode_real")")"
+}
+
+setup_node_runtime() {
+  node_install_root=""
+  sandbox_path="$opencode_bin_dir:$default_path"
+
+  # npm-style installs resolve to a Node launcher, so expose the Node runtime too.
+  if [[ "$opencode_first_line" == '#!'*node* ]]; then
+    require_cmd node "This Opencode install uses a Node launcher, so node must also be on PATH."
+    node_real="$(readlink -f "$(command -v node)")"
+    node_install_root="$(dirname "$(dirname "$node_real")")"
+    sandbox_path="$opencode_bin_dir:$node_install_root/bin:$default_path"
+  fi
+}
+
+ensure_sandbox_dirs() {
+  mkdir -p "$sandbox_home" "$cache_dir" "$config_dir" "$data_dir" "$state_dir"
+}
+
+resolve_paths() {
+  setup_project_paths
+  resolve_opencode_paths
+  setup_node_runtime
+  ensure_sandbox_dirs
+}
+
+add_bind_if_needed() {
+  local candidate_path="$1"
+  local covered_path
+
+  [[ -n "$candidate_path" ]] || return 0
+
+  # Skip paths already exposed by an existing bind or a parent bind.
+  for covered_path in "${covered_paths[@]}"; do
+    if [[ "$candidate_path" == "$covered_path" || "$candidate_path" == "$covered_path"/* ]]; then
+      return 0
+    fi
+  done
+
+  bwrap_args+=(--ro-bind "$candidate_path" "$candidate_path")
+  # Track new binds so later paths can reuse the same coverage check.
+  covered_paths+=("$candidate_path")
+}
+
+build_bwrap_args() {
+  covered_paths=(
+    /usr
+    /etc
+    /lib
+    /lib64
+    /lib32
+    /usr/local/bin
+    "$project"
+  )
+
+  bwrap_args=(
+    --unshare-all
+    --share-net
+    --die-with-parent
+    --new-session
+    --proc /proc
+    --dev /dev
+    --tmpfs /tmp
+    --ro-bind /usr /usr
+    --ro-bind /etc /etc
+    --ro-bind /run /run
+    --ro-bind-try /lib /lib
+    --ro-bind-try /lib64 /lib64
+    --ro-bind-try /lib32 /lib32
+    --symlink usr/bin /bin
+    --symlink usr/sbin /sbin
+    --ro-bind-try /usr/local/bin /usr/local/bin
+    --bind "$project" "$project"
+    --setenv HOME "$sandbox_home"
+    --setenv XDG_CONFIG_HOME "$config_dir"
+    --setenv XDG_CACHE_HOME "$cache_dir"
+    --setenv XDG_DATA_HOME "$data_dir"
+    --setenv XDG_STATE_HOME "$state_dir"
+    --setenv TMPDIR /tmp
+    --setenv PATH "$sandbox_path"
+    --chdir "$project"
+  )
+
+  add_bind_if_needed "$node_install_root"
+  add_bind_if_needed "$opencode_install_root"
+}
+
+main() {
+  require_runtime
+  resolve_paths
+  build_bwrap_args
+
+  exec bwrap \
+    "${bwrap_args[@]}" \
+    "$opencode_real" "$@"
+}
+
+main "$@"
