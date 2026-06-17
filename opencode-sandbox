@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-script_name="${0##*/}"
 default_path="/usr/local/bin:/usr/bin:/bin"
 
 die() {
@@ -139,8 +138,14 @@ build_bwrap_args() {
   add_bind_if_needed "$node_install_root"
   add_bind_if_needed "$opencode_install_root"
 
-  bwrap_args+=(--ro-bind-try "$user_config_home/opencode" "$config_dir/opencode")
-  bwrap_args+=(--bind-try "$user_data_home/opencode" "$data_dir/opencode")
+  if [[ -d "$user_config_home/opencode" ]]; then
+    mkdir -p "$config_dir/opencode"
+    bwrap_args+=(--ro-bind "$user_config_home/opencode" "$config_dir/opencode")
+  fi
+  if [[ -d "$user_data_home/opencode" ]]; then
+    mkdir -p "$data_dir/opencode"
+    bwrap_args+=(--bind "$user_data_home/opencode" "$data_dir/opencode")
+  fi
 }
 
 main() {
