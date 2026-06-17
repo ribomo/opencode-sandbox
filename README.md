@@ -90,3 +90,12 @@ If `~/.config/opencode/` also exists on the host, it is **bind-mounted read-only
 - Any config files you write or edit inside the sandbox go to `./.sandbox/config/opencode/` and do not affect the host.
 
 If `~/.config/opencode/` does **not** exist, only the `./.sandbox/config/opencode/` copy is used.
+
+## SSH and Git behavior
+
+The sandbox sets up SSH so that `git push`, `git fetch`, and other remote operations work from within the sandbox.
+
+- `GIT_SSH_COMMAND` is set to `ssh -F ~/.ssh/config -o StrictHostKeyChecking=accept-new`. The `-F` flag skips the host's system SSH config (`/etc/ssh/ssh_config`), which may have broken ownership or permissions in some container/sandbox environments.
+- If `~/.ssh/config` exists on the host, it is **bind-mounted read-only** into the sandbox. Otherwise an empty config is created so `-F` has a file to read.
+- If `~/.ssh/known_hosts` exists on the host, it is **bind-mounted read-only**, preserving host-key verification state across sandbox runs.
+- If `SSH_AUTH_SOCK` is set and points to a valid socket, it is **forwarded** into the sandbox so existing SSH agent connections work.

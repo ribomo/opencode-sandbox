@@ -81,6 +81,7 @@ setup_node_runtime() {
 # Create the sandbox directory tree inside .sandbox/.
 ensure_sandbox_dirs() {
   mkdir -p "$sandbox_home" "$cache_dir" "$config_dir" "$data_dir" "$state_dir"
+  mkdir -p "$sandbox_home/.ssh"
 }
 
 # Orchestrate all path-resolution and directory-creation steps.
@@ -149,16 +150,25 @@ build_bwrap_args() {
     --setenv XDG_DATA_HOME "$data_dir"
     --setenv XDG_STATE_HOME "$state_dir"
     --setenv TMPDIR /tmp
-    --setenv GIT_SSH_COMMAND "ssh -o StrictHostKeyChecking=accept-new"
     --setenv PATH "$sandbox_path"
     --chdir "$project"
   )
 
-  # Expose the user's SSH config read-only if it exists.
-  if [[ -d "$HOME/.ssh" && -f "$HOME/.ssh/config" ]]; then
-    mkdir -p "$sandbox_home/.ssh"
+  # Expose host SSH config if present, otherwise create a minimal one.
+  # Always use -F to skip the system SSH config, which may have bad
+  # ownership or permissions in sandboxed/containerized environments.
+  if [[ -f "$HOME/.ssh/config" ]]; then
     bwrap_args+=(--ro-bind "$HOME/.ssh/config" "$sandbox_home/.ssh/config")
+  else
+    touch "$sandbox_home/.ssh/config"
   fi
+
+  # Preserve known_hosts for host-key verification persistence.
+  if [[ -f "$HOME/.ssh/known_hosts" ]]; then
+    bwrap_args+=(--ro-bind "$HOME/.ssh/known_hosts" "$sandbox_home/.ssh/known_hosts")
+  fi
+
+  bwrap_args+=(--setenv GIT_SSH_COMMAND "ssh -F ~/.ssh/config -o StrictHostKeyChecking=accept-new")
 
   # Forward the SSH agent socket so git operations work inside the sandbox.
   if [[ -n "${SSH_AUTH_SOCK:-}" ]] && [[ -S "$SSH_AUTH_SOCK" ]]; then
