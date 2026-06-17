@@ -111,7 +111,6 @@ build_bwrap_args() {
     --unshare-all
     --share-net
     --die-with-parent
-    --new-session
     --proc /proc
     --dev /dev
     --tmpfs /tmp
