@@ -32,17 +32,17 @@ Non-Linux platforms are out of scope for this version.
 
 ## Install
 
-1. Clone this repository.
-2. Make the launcher executable if needed:
-
 ```bash
+git clone https://github.com/ribomo/opencode-sandbox.git
+cd opencode-sandbox
 chmod +x opencode-sandbox
+cp opencode-sandbox "$HOME/.local/bin/opencode-sandbox"
 ```
 
-3. Optionally place it on your `PATH`:
+Make sure the install destination is on your `PATH` (or adjust the path above), then you can run it from any project:
 
 ```bash
-install -Dm755 opencode-sandbox "$HOME/.local/bin/opencode-sandbox"
+opencode-sandbox
 ```
 
 ## Quick Start
