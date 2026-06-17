@@ -51,13 +51,13 @@ opencode-sandbox
 Run the wrapper from the project directory you want to expose inside the sandbox:
 
 ```bash
-./opencode-sandbox
+opencode-sandbox
 ```
 
 Run a simple launch check:
 
 ```bash
-./opencode-sandbox --help
+opencode-sandbox --help
 ```
 
 ## Usage
@@ -65,8 +65,8 @@ Run a simple launch check:
 Pass any normal Opencode arguments through the wrapper:
 
 ```bash
-./opencode-sandbox --help
-./opencode-sandbox run "summarize this repository"
+opencode-sandbox --help
+opencode-sandbox run "summarize this repository"
 ```
 
 ## Behavior
