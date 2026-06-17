@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
+# Run Opencode inside a bubblewrap sandbox, isolating it from the host system
+# while selectively exposing only the resources it needs.
+
 set -euo pipefail
 
+# Minimal fallback PATH inside the sandbox.
 default_path="/usr/local/bin:/usr/bin:/bin"
 
+# Print an error message to stderr and exit.
 die() {
   printf 'Error: %s\n' "$1" >&2
   exit 1
 }
 
+# Check that a required command is available, showing optional help text.
 require_cmd() {
   local command_name="$1"
   local help_text="${2:-}"
@@ -20,18 +26,21 @@ require_cmd() {
   fi
 }
 
+# Bail early if we are not on Linux (bubblewrap is Linux-only).
 require_linux() {
   if [[ "$(uname -s)" != "Linux" ]]; then
     die "This wrapper only supports Linux because it relies on bubblewrap."
   fi
 }
 
+# Verify the host has both bubblewrap and Opencode installed.
 require_runtime() {
   require_linux
   require_cmd bwrap "Install bubblewrap with your system package manager."
   require_cmd opencode "Install Opencode before using this wrapper."
 }
 
+# Derive sandbox directory layout from the current working directory.
 setup_project_paths() {
   project="$(pwd -P)"
   sandbox_root="$project/.sandbox"
@@ -46,6 +55,7 @@ setup_project_paths() {
   user_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 }
 
+# Resolve the real Opencode binary and detect its shebang line.
 resolve_opencode_paths() {
   opencode_real="$(readlink -f "$(command -v opencode)")"
   opencode_first_line="$(head -n 1 "$opencode_real" 2>/dev/null | tr -d '\0' || true)"
@@ -54,11 +64,12 @@ resolve_opencode_paths() {
   opencode_install_root="$(dirname "$(dirname "$opencode_real")")"
 }
 
+# If Opencode is installed via npm (shebang line references Node), expose
+# Node's install root inside the sandbox so the runtime can be found.
 setup_node_runtime() {
   node_install_root=""
   sandbox_path="$opencode_bin_dir:$default_path"
 
-  # npm-style installs resolve to a Node launcher, so expose the Node runtime too.
   if [[ "$opencode_first_line" == '#!'*node* ]]; then
     require_cmd node "This Opencode install uses a Node launcher, so node must also be on PATH."
     node_real="$(readlink -f "$(command -v node)")"
@@ -67,10 +78,12 @@ setup_node_runtime() {
   fi
 }
 
+# Create the sandbox directory tree inside .sandbox/.
 ensure_sandbox_dirs() {
   mkdir -p "$sandbox_home" "$cache_dir" "$config_dir" "$data_dir" "$state_dir"
 }
 
+# Orchestrate all path-resolution and directory-creation steps.
 resolve_paths() {
   setup_project_paths
   resolve_opencode_paths
@@ -78,13 +91,14 @@ resolve_paths() {
   ensure_sandbox_dirs
 }
 
+# Add a read-only bind-mount for the given host path, but only if it is not
+# already covered by an existing mount (or an ancestor path).
 add_bind_if_needed() {
   local candidate_path="$1"
   local covered_path
 
   [[ -n "$candidate_path" ]] || return 0
 
-  # Skip paths already exposed by an existing bind or a parent bind.
   for covered_path in "${covered_paths[@]}"; do
     if [[ "$candidate_path" == "$covered_path" || "$candidate_path" == "$covered_path"/* ]]; then
       return 0
@@ -92,11 +106,16 @@ add_bind_if_needed() {
   done
 
   bwrap_args+=(--ro-bind "$candidate_path" "$candidate_path")
-  # Track new binds so later paths can reuse the same coverage check.
   covered_paths+=("$candidate_path")
 }
 
+# Compose the full set of bubblewrap arguments.
+# This isolates the process (no network, no other namespaces besides net),
+# remaps the project directory and XDG dirs into .sandbox/, and selectively
+# exposes system paths, SSH config, the SSH agent socket, and Opencode/Node
+# install roots.
 build_bwrap_args() {
+  # Track paths already covered to avoid duplicate or nested mounts.
   covered_paths=(
     /usr
     /etc
@@ -130,13 +149,27 @@ build_bwrap_args() {
     --setenv XDG_DATA_HOME "$data_dir"
     --setenv XDG_STATE_HOME "$state_dir"
     --setenv TMPDIR /tmp
+    --setenv GIT_SSH_COMMAND "ssh -o StrictHostKeyChecking=accept-new"
     --setenv PATH "$sandbox_path"
     --chdir "$project"
   )
 
+  # Expose the user's SSH config read-only if it exists.
+  if [[ -d "$HOME/.ssh" && -f "$HOME/.ssh/config" ]]; then
+    mkdir -p "$sandbox_home/.ssh"
+    bwrap_args+=(--ro-bind "$HOME/.ssh/config" "$sandbox_home/.ssh/config")
+  fi
+
+  # Forward the SSH agent socket so git operations work inside the sandbox.
+  if [[ -n "${SSH_AUTH_SOCK:-}" ]] && [[ -S "$SSH_AUTH_SOCK" ]]; then
+    bwrap_args+=(--setenv SSH_AUTH_SOCK "$SSH_AUTH_SOCK")
+    bwrap_args+=(--bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK")
+  fi
+
   add_bind_if_needed "$node_install_root"
   add_bind_if_needed "$opencode_install_root"
 
+  # Bind per-user Opencode configuration and data directories if present.
   if [[ -d "$user_config_home/opencode" ]]; then
     mkdir -p "$config_dir/opencode"
     bwrap_args+=(--ro-bind "$user_config_home/opencode" "$config_dir/opencode")
