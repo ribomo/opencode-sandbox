@@ -42,11 +42,14 @@ setup_project_paths() {
   config_dir="$sandbox_root/config"
   data_dir="$sandbox_root/data"
   state_dir="$sandbox_root/state"
+
+  user_config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+  user_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 }
 
 resolve_opencode_paths() {
   opencode_real="$(readlink -f "$(command -v opencode)")"
-  opencode_first_line="$(head -n 1 "$opencode_real" 2>/dev/null || true)"
+  opencode_first_line="$(head -n 1 "$opencode_real" 2>/dev/null | tr -d '\0' || true)"
 
   opencode_bin_dir="$(dirname "$opencode_real")"
   opencode_install_root="$(dirname "$(dirname "$opencode_real")")"
@@ -135,6 +138,9 @@ build_bwrap_args() {
 
   add_bind_if_needed "$node_install_root"
   add_bind_if_needed "$opencode_install_root"
+
+  bwrap_args+=(--ro-bind-try "$user_config_home/opencode" "$config_dir/opencode")
+  bwrap_args+=(--bind-try "$user_data_home/opencode" "$data_dir/opencode")
 }
 
 main() {
