@@ -33,14 +33,16 @@ Non-Linux platforms are out of scope for this version.
 ## Install
 
 ```bash
-git clone https://github.com/ribomo/opencode-sandbox.git
-cd opencode-sandbox
-chmod +x opencode-sandbox
-mkdir -p "$HOME/.local/bin"
-cp opencode-sandbox "$HOME/.local/bin/opencode-sandbox"
+curl -fsSL https://raw.githubusercontent.com/ribomo/opencode-sandbox/main/install.sh | bash
 ```
 
-Make sure the install destination is on your `PATH` (or adjust the path above), then you can run it from any project:
+Or with a custom install directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ribomo/opencode-sandbox/main/install.sh | PREFIX=/usr/local/bin bash
+```
+
+Then run it from any project:
 
 ```bash
 opencode-sandbox
