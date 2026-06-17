@@ -77,3 +77,16 @@ Pass any normal Opencode arguments through the wrapper:
 - `/run` is mounted read-only so host runtime files such as DNS resolver state remain available.
 - The wrapper always shares the host network namespace.
 - If the resolved Opencode entrypoint starts with a Node shebang, the wrapper also exposes the matching Node install root.
+- `XDG_CONFIG_HOME` is redirected to `./.sandbox/config`, so opencode reads its global config from `./.sandbox/config/opencode/` instead of `~/.config/opencode/`.
+
+## Config behavior
+
+The sandbox creates an isolated config directory at `./.sandbox/config/opencode/` with its own `opencode.jsonc`. This is the writable config that `opencode` sees as its global config (because `XDG_CONFIG_HOME` is set to `./.sandbox/config`).
+
+If `~/.config/opencode/` also exists on the host, it is **bind-mounted read-only** into the sandbox on top of `./.sandbox/config/opencode/`. This means:
+
+- Your real global config (agents, commands, MCP servers, themes, etc.) is visible inside the sandbox.
+- You cannot accidentally modify your real config from within the sandbox — the mount is read-only.
+- Any config files you write or edit inside the sandbox go to `./.sandbox/config/opencode/` and do not affect the host.
+
+If `~/.config/opencode/` does **not** exist, only the `./.sandbox/config/opencode/` copy is used.
