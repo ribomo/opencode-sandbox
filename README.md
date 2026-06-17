@@ -36,6 +36,7 @@ Non-Linux platforms are out of scope for this version.
 git clone https://github.com/ribomo/opencode-sandbox.git
 cd opencode-sandbox
 chmod +x opencode-sandbox
+mkdir -p "$HOME/.local/bin"
 cp opencode-sandbox "$HOME/.local/bin/opencode-sandbox"
 ```
 
