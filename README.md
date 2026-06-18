@@ -97,7 +97,9 @@ If `~/.config/opencode/` does **not** exist, only the `./.sandbox/config/opencod
 
 The sandbox sets up SSH so that `git push`, `git fetch`, and other remote operations work from within the sandbox.
 
-- `GIT_SSH_COMMAND` is set to `ssh -F ~/.ssh/config -o StrictHostKeyChecking=accept-new`. The `-F` flag skips the host's system SSH config (`/etc/ssh/ssh_config`), which may have broken ownership or permissions in some container/sandbox environments.
+- `GIT_SSH_COMMAND` is set with absolute paths into `.sandbox/home/.ssh` for SSH config and host keys. The `-F` flag skips the host's system SSH config (`/etc/ssh/ssh_config`), which may have broken ownership or permissions in some container/sandbox environments.
 - If `~/.ssh/config` exists on the host, it is **bind-mounted read-only** into the sandbox. Otherwise an empty config is created so `-F` has a file to read.
 - If `~/.ssh/known_hosts` exists on the host, it is **bind-mounted read-only**, preserving host-key verification state across sandbox runs.
-- If `SSH_AUTH_SOCK` is set and points to a valid socket, it is **forwarded** into the sandbox so existing SSH agent connections work.
+- If `SSH_AUTH_SOCK` is set and points to a valid socket with loaded identities, it is **forwarded** into the sandbox so existing SSH agent connections work.
+- If no usable SSH agent is available, the wrapper starts a temporary host-side agent, runs `ssh-add` for the first default key it finds, forwards that agent socket into the sandbox, and stops the temporary agent when Opencode exits.
+- Private keys such as `id_ed25519`, `id_ecdsa`, and `id_rsa` are **never mounted** into the sandbox. If no key can be loaded into an agent, SSH-based Git operations fail safely instead of exposing key material.

@@ -6,6 +6,7 @@ set -euo pipefail
 
 # Minimal fallback PATH inside the sandbox.
 default_path="/usr/local/bin:/usr/bin:/bin"
+temporary_ssh_agent_started=0
 
 # Print an error message to stderr and exit.
 die() {
@@ -38,6 +39,85 @@ require_runtime() {
   require_linux
   require_cmd bwrap "Install bubblewrap with your system package manager."
   require_cmd opencode "Install Opencode before using this wrapper."
+}
+
+# Report whether the current SSH agent exists and has at least one identity.
+ssh_agent_has_identities() {
+  [[ -n "${SSH_AUTH_SOCK:-}" ]] || return 1
+  [[ -S "$SSH_AUTH_SOCK" ]] || return 1
+  ssh-add -l >/dev/null 2>&1
+}
+
+# Pick the first conventional private key path that exists on the host.
+find_default_ssh_identity() {
+  local identity_file
+  local identity_files=(
+    "$HOME/.ssh/id_ed25519"
+    "$HOME/.ssh/id_ecdsa"
+    "$HOME/.ssh/id_rsa"
+  )
+
+  for identity_file in "${identity_files[@]}"; do
+    if [[ -f "$identity_file" ]]; then
+      printf '%s\n' "$identity_file"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Start a temporary host-side SSH agent when no usable agent is available.
+# The private key is loaded before sandboxing and is never mounted inside.
+ensure_ssh_agent() {
+  local identity_file
+  local agent_dir
+
+  if ssh_agent_has_identities; then
+    return 0
+  fi
+
+  identity_file="$(find_default_ssh_identity || true)"
+  if [[ -z "$identity_file" ]]; then
+    printf 'Warning: no SSH agent identities and no default SSH key found; SSH Git operations may fail.\n' >&2
+    return 0
+  fi
+
+  if ! command -v ssh-agent >/dev/null 2>&1 || ! command -v ssh-add >/dev/null 2>&1; then
+    printf 'Warning: ssh-agent or ssh-add not found; SSH Git operations may fail.\n' >&2
+    return 0
+  fi
+
+  agent_dir="$sandbox_root/ssh-agent/$$"
+  mkdir -p "$agent_dir"
+  chmod 700 "$sandbox_root/ssh-agent" "$agent_dir"
+  rm -f "$agent_dir/socket"
+
+  eval "$(ssh-agent -a "$agent_dir/socket" -s)" >/dev/null
+  temporary_ssh_agent_started=1
+
+  if ! ssh-add "$identity_file"; then
+    printf 'Warning: failed to add %s to the SSH agent; SSH Git operations may fail.\n' "$identity_file" >&2
+  fi
+}
+
+# Stop only the temporary agent started by this wrapper.
+cleanup_ssh_agent() {
+  if [[ "$temporary_ssh_agent_started" -eq 1 ]]; then
+    ssh-agent -k >/dev/null 2>&1 || true
+  fi
+}
+
+# Avoid passphrase prompts for commands that only print metadata.
+should_prepare_ssh_agent() {
+  case "${1:-}" in
+    -h|--help|-v|--version|completion)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
 }
 
 # Derive sandbox directory layout from the current working directory.
@@ -82,6 +162,8 @@ setup_node_runtime() {
 ensure_sandbox_dirs() {
   mkdir -p "$sandbox_home" "$cache_dir" "$config_dir" "$data_dir" "$state_dir"
   mkdir -p "$sandbox_home/.ssh"
+  chmod 700 "$sandbox_home"
+  chmod 700 "$sandbox_home/.ssh"
 }
 
 # Orchestrate all path-resolution and directory-creation steps.
@@ -108,6 +190,59 @@ add_bind_if_needed() {
 
   bwrap_args+=(--ro-bind "$candidate_path" "$candidate_path")
   covered_paths+=("$candidate_path")
+}
+
+# Expose only non-secret SSH support files. Private keys stay outside the
+# sandbox; Git authentication should use the forwarded SSH agent.
+bind_ssh_support_files() {
+  if [[ -f "$HOME/.ssh/config" ]]; then
+    bwrap_args+=(--ro-bind "$HOME/.ssh/config" "$sandbox_home/.ssh/config")
+  else
+    touch "$sandbox_home/.ssh/config"
+  fi
+
+  if [[ -f "$HOME/.ssh/known_hosts" ]]; then
+    bwrap_args+=(--ro-bind "$HOME/.ssh/known_hosts" "$sandbox_home/.ssh/known_hosts")
+  else
+    touch "$sandbox_home/.ssh/known_hosts"
+  fi
+}
+
+# Build a shell-safe GIT_SSH_COMMAND with absolute sandbox paths.
+build_git_ssh_command() {
+  local part
+  local quoted_part
+  local command_parts=(
+    ssh
+    -F
+    "$sandbox_home/.ssh/config"
+    -o
+    StrictHostKeyChecking=accept-new
+    -o
+    "UserKnownHostsFile=$sandbox_home/.ssh/known_hosts"
+  )
+
+  if [[ -n "${SSH_AUTH_SOCK:-}" ]] && [[ -S "$SSH_AUTH_SOCK" ]]; then
+    command_parts+=(
+      -o
+      "IdentityAgent=$SSH_AUTH_SOCK"
+    )
+  fi
+
+  git_ssh_command=""
+  for part in "${command_parts[@]}"; do
+    printf -v quoted_part '%q' "$part"
+    git_ssh_command+="${git_ssh_command:+ }$quoted_part"
+  done
+}
+
+# Make the selected SSH agent socket reachable inside the sandbox.
+bind_ssh_agent_socket() {
+  [[ -n "${SSH_AUTH_SOCK:-}" ]] || return 0
+  [[ -S "$SSH_AUTH_SOCK" ]] || return 0
+
+  bwrap_args+=(--setenv SSH_AUTH_SOCK "$SSH_AUTH_SOCK")
+  bwrap_args+=(--bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK")
 }
 
 # Compose the full set of bubblewrap arguments.
@@ -154,27 +289,17 @@ build_bwrap_args() {
     --chdir "$project"
   )
 
-  # Expose host SSH config if present, otherwise create a minimal one.
+  # Expose host SSH config and known_hosts only. Private keys are never
+  # mounted into the sandbox.
   # Always use -F to skip the system SSH config, which may have bad
   # ownership or permissions in sandboxed/containerized environments.
-  if [[ -f "$HOME/.ssh/config" ]]; then
-    bwrap_args+=(--ro-bind "$HOME/.ssh/config" "$sandbox_home/.ssh/config")
-  else
-    touch "$sandbox_home/.ssh/config"
-  fi
-
-  # Preserve known_hosts for host-key verification persistence.
-  if [[ -f "$HOME/.ssh/known_hosts" ]]; then
-    bwrap_args+=(--ro-bind "$HOME/.ssh/known_hosts" "$sandbox_home/.ssh/known_hosts")
-  fi
-
-  bwrap_args+=(--setenv GIT_SSH_COMMAND "ssh -F ~/.ssh/config -o StrictHostKeyChecking=accept-new")
+  bind_ssh_support_files
 
   # Forward the SSH agent socket so git operations work inside the sandbox.
-  if [[ -n "${SSH_AUTH_SOCK:-}" ]] && [[ -S "$SSH_AUTH_SOCK" ]]; then
-    bwrap_args+=(--setenv SSH_AUTH_SOCK "$SSH_AUTH_SOCK")
-    bwrap_args+=(--bind "$SSH_AUTH_SOCK" "$SSH_AUTH_SOCK")
-  fi
+  bind_ssh_agent_socket
+
+  build_git_ssh_command
+  bwrap_args+=(--setenv GIT_SSH_COMMAND "$git_ssh_command")
 
   add_bind_if_needed "$node_install_root"
   add_bind_if_needed "$opencode_install_root"
@@ -193,11 +318,21 @@ build_bwrap_args() {
 main() {
   require_runtime
   resolve_paths
+  if should_prepare_ssh_agent "$@"; then
+    ensure_ssh_agent
+  fi
   build_bwrap_args
 
-  exec bwrap \
-    "${bwrap_args[@]}" \
-    "$opencode_real" "$@"
+  if [[ "$temporary_ssh_agent_started" -eq 1 ]]; then
+    trap cleanup_ssh_agent EXIT
+    bwrap \
+      "${bwrap_args[@]}" \
+      "$opencode_real" "$@"
+  else
+    exec bwrap \
+      "${bwrap_args[@]}" \
+      "$opencode_real" "$@"
+  fi
 }
 
 main "$@"
