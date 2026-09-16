@@ -77,6 +77,7 @@ opencode-sandbox run "summarize this repository"
 - Sandbox state is written to `./.sandbox`.
 - `/usr`, `/etc`, and common system library directories are mounted read-only.
 - `/run` is mounted read-only so host runtime files such as DNS resolver state remain available.
+- `/mnt/wsl` is mounted read-only when present so WSL's `/etc/resolv.conf` symlink can resolve to `/mnt/wsl/resolv.conf` for DNS.
 - The wrapper always shares the host network namespace.
 - If the resolved Opencode entrypoint starts with a Node shebang, the wrapper also exposes the matching Node install root.
 - `XDG_CONFIG_HOME` is redirected to `./.sandbox/config`, so opencode reads its global config from `./.sandbox/config/opencode/` instead of `~/.config/opencode/`.
