@@ -158,6 +158,57 @@ setup_node_runtime() {
   fi
 }
 
+# Use a private server for V2 clients so tool execution stays in the sandbox.
+setup_opencode_args() {
+  opencode_args=("$@")
+  local index=0 arg
+
+  # Preserve explicit connections and metadata requests.
+  for arg in "$@"; do
+    case "$arg" in
+      --) break ;;
+      --standalone|--standalone=*|--server|--server=*|-h|--help|-v|--version|--completions|--completions=*) return 0 ;;
+    esac
+  done
+
+  # V1 does not accept --standalone; only add it for a recognized V2 build.
+  local version
+  version="$("$opencode_real" --version 2>/dev/null)" || return 0
+  [[ "$version" =~ ^(opencode[[:space:]]+)?v?2\. ]] || return 0
+
+  # Skip global options that may precede the subcommand.
+  while (( index < $# )); do
+    case "${opencode_args[index]}" in
+      --log-level) index=$((index + 2)) ;;
+      --log-level=*|--print-logs|--print-logs=*) index=$((index + 1)) ;;
+      *) break ;;
+    esac
+  done
+
+  case "${opencode_args[index]:-}" in
+    run|mini|api|models|stats|reload)
+      index=$((index + 1))
+      ;;
+    auth|session)
+      index=$((index + 1))
+      # Global options may also appear between a group and its leaf command.
+      while (( index < $# )); do
+        case "${opencode_args[index]}" in
+          --log-level) index=$((index + 2)) ;;
+          --log-level=*|--print-logs|--print-logs=*) index=$((index + 1)) ;;
+          *) break ;;
+        esac
+      done
+      [[ -n "${opencode_args[index]:-}" && "${opencode_args[index]}" != -* ]] || return 0
+      index=$((index + 1))
+      ;;
+    acp|pair|serve|upgrade|update|uninstall|mcp|plugin|service|debug) return 0 ;;
+    *) ;; # No subcommand: the TUI, optionally with flags or a directory.
+  esac
+
+  opencode_args=("${opencode_args[@]:0:index}" --standalone "${opencode_args[@]:index}")
+}
+
 # Create the sandbox directory tree inside .sandbox/.
 ensure_sandbox_dirs() {
   mkdir -p "$sandbox_home" "$cache_dir" "$config_dir" "$data_dir" "$state_dir"
@@ -246,7 +297,7 @@ bind_ssh_agent_socket() {
 }
 
 # Compose the full set of bubblewrap arguments.
-# This isolates the process (no network, no other namespaces besides net),
+# This isolates the process namespaces while retaining host network access,
 # remaps the project directory and XDG dirs into .sandbox/, and selectively
 # exposes system paths, SSH config, the SSH agent socket, and Opencode/Node
 # install roots.
@@ -306,7 +357,7 @@ build_bwrap_args() {
   add_bind_if_needed "$node_install_root"
   add_bind_if_needed "$opencode_install_root"
 
-  # Bind per-user Opencode configuration and data directories if present.
+  # Expose host configuration read-only and share existing credentials and sessions.
   if [[ -d "$user_config_home/opencode" ]]; then
     mkdir -p "$config_dir/opencode"
     bwrap_args+=(--ro-bind "$user_config_home/opencode" "$config_dir/opencode")
@@ -320,6 +371,7 @@ build_bwrap_args() {
 main() {
   require_runtime
   resolve_paths
+  setup_opencode_args "$@"
   if should_prepare_ssh_agent "$@"; then
     ensure_ssh_agent
   fi
@@ -329,11 +381,11 @@ main() {
     trap cleanup_ssh_agent EXIT
     bwrap \
       "${bwrap_args[@]}" \
-      "$opencode_real" "$@"
+      "$opencode_real" "${opencode_args[@]}"
   else
     exec bwrap \
       "${bwrap_args[@]}" \
-      "$opencode_real" "$@"
+      "$opencode_real" "${opencode_args[@]}"
   fi
 }
 
