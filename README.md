@@ -7,6 +7,7 @@ It is a small Bash wrapper that:
 - uses the current directory as the writable project root,
 - stores sandbox state under `./.sandbox`,
 - keeps host network access enabled,
+- uses a private in-sandbox server for OpenCode V2 clients,
 - and mounts Node automatically when the resolved `opencode` entrypoint is a Node launcher.
 
 ## Why Sandbox Opencode?
@@ -26,7 +27,7 @@ The goal is not perfect isolation. It is a practical safety boundary that keeps 
 
 - Linux only
 - Bubblewrap must be installed; check with `command -v bwrap`
-- `opencode` required
+- OpenCode V1 or V2 required
 
 Non-Linux platforms are out of scope for this version.
 
@@ -69,7 +70,24 @@ Pass any normal Opencode arguments through the wrapper:
 ```bash
 opencode-sandbox --help
 opencode-sandbox run "summarize this repository"
+opencode-sandbox api get /api/info
 ```
+
+### OpenCode V2
+
+V2 normally discovers or starts a detached background service. That service
+owns tool execution, and its lifecycle does not fit the sandbox's PID namespace.
+The wrapper automatically adds `--standalone` to supported client commands,
+including the TUI, `run`, `mini`, and `api`, so their private server runs inside
+the sandbox and exits with the client. The wrapper checks the installed version
+and identifies supported V2 client commands directly. V1 arguments are passed
+through unchanged. If the version cannot be identified, arguments are also
+passed through unchanged.
+
+Explicit `--standalone` or `--server` arguments are passed through. When using
+`--server`, tools execute on that server; this wrapper only sandboxes the local
+client. Service-management commands are passed through as well; a detached
+service is not intended to persist after the sandbox exits.
 
 ## Behavior
 
@@ -84,15 +102,27 @@ opencode-sandbox run "summarize this repository"
 
 ## Config behavior
 
-The sandbox creates an isolated config directory at `./.sandbox/config/opencode/` with its own `opencode.jsonc`. This is the writable config that `opencode` sees as its global config (because `XDG_CONFIG_HOME` is set to `./.sandbox/config`).
+If `~/.config/opencode/` (or `$XDG_CONFIG_HOME/opencode/`) exists, it is
+bind-mounted **read-only** at `./.sandbox/config/opencode/`. OpenCode reads your
+host configuration directly; the wrapper does not copy or migrate it. Settings
+changes and V2 migration must be performed outside the sandbox.
 
-If `~/.config/opencode/` also exists on the host, it is **bind-mounted read-only** into the sandbox on top of `./.sandbox/config/opencode/`. This means:
+If there is no host config directory, OpenCode uses the writable sandbox-local
+config directory instead.
 
-- Your real global config (agents, commands, MCP servers, themes, etc.) is visible inside the sandbox.
-- You cannot accidentally modify your real config from within the sandbox — the mount is read-only.
-- Any config files you write or edit inside the sandbox go to `./.sandbox/config/opencode/` and do not affect the host.
+The host OpenCode **data** directory (`$XDG_DATA_HOME/opencode`, defaulting to
+`~/.local/share/opencode`) is still mounted read-write when present, sharing
+credentials and session history. Cache and state directories remain local to
+`.sandbox`.
 
-If `~/.config/opencode/` does **not** exist, only the `./.sandbox/config/opencode/` copy is used.
+## Development checks
+
+Run the wrapper regression checks with Python 3:
+
+```bash
+python3 -m unittest discover -s tests -v
+bash -n opencode-sandbox install.sh
+```
 
 ## SSH and Git behavior
 
